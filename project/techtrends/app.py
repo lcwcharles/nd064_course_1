@@ -1,13 +1,36 @@
 import sqlite3
+import logging
+import threading
+import sys
 
 from flask import Flask, jsonify, json, render_template, request, url_for, redirect, flash
 from werkzeug.exceptions import abort
 
+# Set up logging to a file
+formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+
+file_handler = logging.FileHandler('app.log')
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(formatter)
+
+# 控制台日志
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.DEBUG)
+console_handler.setFormatter(formatter)
+
+db_connection_count = 0
+
+db_connection_lock = threading.Lock()
+
 # Function to get a database connection.
 # This function connects to database with the name `database.db`
 def get_db_connection():
+    global db_connection_count
     connection = sqlite3.connect('database.db')
     connection.row_factory = sqlite3.Row
+
+    with db_connection_lock:
+        db_connection_count += 1
     return connection
 
 # Function to get a post using its ID
@@ -21,6 +44,16 @@ def get_post(post_id):
 # Define the Flask application
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your secret key'
+
+app.logger.setLevel(logging.DEBUG)
+app.logger.addHandler(file_handler)
+app.logger.addHandler(console_handler)
+
+# Also capture Werkzeug logs (for request info)
+werkzeug_logger = logging.getLogger('werkzeug')
+werkzeug_logger.setLevel(logging.INFO)
+werkzeug_logger.addHandler(file_handler)
+werkzeug_logger.addHandler(console_handler)
 
 # Define the main route of the web application 
 @app.route('/')
@@ -64,6 +97,44 @@ def create():
             return redirect(url_for('index'))
 
     return render_template('create.html')
+
+@app.route('/healthz')
+def healthz():
+    response = app.response_class(
+            response=json.dumps({"result":"OK - healthy"}),
+            status=200,
+            mimetype='application/json'
+    )
+    app.logger.info('Status request successfull')
+    app.logger.debug('DEBUG message')
+    return response
+
+@app.route('/metrics')
+def metrics():
+    connection = get_db_connection()
+
+    try:
+        post_count = connection.execute(
+            'SELECT COUNT(*) FROM posts'
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    with db_connection_lock:
+        total_connections = db_connection_count
+
+    response = {
+        "status": "success",
+        "code": 0,
+        "data": {
+            "db_connection_count": total_connections,
+            "post_count": post_count
+        }
+    }
+
+    app.logger.info('Metrics request successful')
+
+    return jsonify(response), 200
 
 # start the application on port 3111
 if __name__ == "__main__":
